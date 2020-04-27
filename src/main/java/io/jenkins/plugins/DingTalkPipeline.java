@@ -1,16 +1,24 @@
 package io.jenkins.plugins;
 
+import com.google.common.base.Strings;
 import hudson.EnvVars;
 import hudson.Extension;
 import hudson.FilePath;
 import hudson.Launcher;
 import hudson.model.AbstractProject;
+import hudson.model.Cause.UserIdCause;
+import hudson.model.Job;
+import hudson.model.Result;
 import hudson.model.Run;
 import hudson.model.TaskListener;
+import hudson.model.User;
 import hudson.tasks.BuildStepDescriptor;
 import hudson.tasks.Builder;
 import io.jenkins.plugins.enums.BtnLayoutEnum;
+import io.jenkins.plugins.enums.BuildStatusEnum;
 import io.jenkins.plugins.enums.MsgTypeEnum;
+import io.jenkins.plugins.enums.NoticeOccasionEnum;
+import io.jenkins.plugins.model.BuildJobModel;
 import io.jenkins.plugins.model.ButtonModel;
 import io.jenkins.plugins.model.MessageModel;
 import io.jenkins.plugins.service.impl.DingTalkServiceImpl;
@@ -20,6 +28,7 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Collectors;
 import javax.annotation.Nonnull;
 import jenkins.model.Jenkins;
 import jenkins.tasks.SimpleBuildStep;
@@ -78,9 +87,21 @@ public class DingTalkPipeline extends Builder implements SimpleBuildStep {
 
   private DingTalkServiceImpl service = new DingTalkServiceImpl();
 
+  private DingTalkGlobalConfig globalConfig = DingTalkGlobalConfig.getInstance();
+  /**
+   * 自定义显示项目名称
+   */
+  private String projectName;
+
   @DataBoundConstructor
   public DingTalkPipeline(String robot) {
     this.robot = robot;
+  }
+
+
+  @DataBoundSetter
+  public void setProjectName(String projectName) {
+    this.projectName = projectName;
   }
 
   @DataBoundSetter
@@ -166,6 +187,31 @@ public class DingTalkPipeline extends Builder implements SimpleBuildStep {
       @Nonnull Launcher launcher, @Nonnull TaskListener listener)
       throws InterruptedException, IOException {
 
+    Job<?, ?> job = run.getParent();
+    UserIdCause userIdCause = run.getCause(UserIdCause.class);
+    // 执行人信息
+    User user = null;
+    String executorName;
+    String executorMobile = null;
+    // 执行人不存在
+    if (userIdCause != null && userIdCause.getUserId() != null) {
+      user = User.getById(userIdCause.getUserId(), false);
+    }
+    if (user != null) {
+      executorName = user.getDisplayName();
+      executorMobile = user.getProperty(DingTalkUserProperty.class).getMobile();
+    } else {
+      executorName = run.getCauses()
+          .stream()
+          .map(
+              item -> item.getShortDescription().replace(
+                  "Started by remote host",
+                  "Host"
+              )
+          )
+          .collect(Collectors.joining());
+    }
+
     EnvVars envVars = run.getEnvironment(listener);
 
     boolean defaultBtns = MsgTypeEnum.ACTION_CARD.equals(type) &&
@@ -202,6 +248,42 @@ public class DingTalkPipeline extends Builder implements SimpleBuildStep {
       );
     }
 
+    // 项目信息
+    String customProjectName = "";
+    if (Strings.isNullOrEmpty(projectName)){
+      customProjectName = job.getFullDisplayName();
+    } else {
+      customProjectName = projectName;
+    }
+    String projectUrl = job.getAbsoluteUrl();
+    // 构建信息
+    String jobName = run.getDisplayName();
+    String jobUrl = rootPath + run.getUrl();
+    String duration = run.getDurationString();
+
+    BuildStatusEnum statusType = getBuildStatus(run.getResult());
+
+    String defaultText = BuildJobModel.builder()
+        .projectName(projectName)
+        .projectUrl(customProjectName)
+        .jobName(jobName)
+        .jobUrl(jobUrl)
+        .statusType(statusType)
+        .duration(duration)
+        .executorName(executorName)
+        .executorMobile(executorMobile)
+        .build()
+        .toMarkdown();
+
+    String showText = "";
+    if (text == null) {
+      showText = defaultText;
+    } else {
+      showText =  envVars.expand(
+          Utils.join(text)
+      );
+    }
+
     String result = service.send(
         robot,
         MessageModel.builder()
@@ -211,11 +293,7 @@ public class DingTalkPipeline extends Builder implements SimpleBuildStep {
             .title(
                 envVars.expand(title)
             )
-            .text(
-                envVars.expand(
-                    Utils.join(text)
-                )
-            )
+            .text(showText)
             .messageUrl(
                 envVars.expand(messageUrl)
             )
@@ -235,9 +313,50 @@ public class DingTalkPipeline extends Builder implements SimpleBuildStep {
             .hideAvatar(isHideAvatar())
             .build()
     );
+
     if (!StringUtils.isEmpty(result)) {
       Utils.log(listener, result);
     }
+  }
+
+  private BuildStatusEnum getBuildStatus(Result result) {
+    BuildStatusEnum statusType = null;
+    Set<String> noticeOccasions = globalConfig.getNoticeOccasions();
+    if (Result.SUCCESS.equals(result)) {
+
+      if (noticeOccasions.contains(NoticeOccasionEnum.SUCCESS.name())) {
+        statusType = BuildStatusEnum.SUCCESS;
+      }
+
+    } else if (Result.FAILURE.equals(result)) {
+
+      if (noticeOccasions.contains(NoticeOccasionEnum.FAILURE.name())) {
+        statusType = BuildStatusEnum.FAILURE;
+      }
+
+    } else if (Result.ABORTED.equals(result)) {
+
+      if (noticeOccasions.contains(NoticeOccasionEnum.ABORTED.name())) {
+        statusType = BuildStatusEnum.ABORTED;
+      }
+
+    } else if (Result.UNSTABLE.equals(result)) {
+
+      if (noticeOccasions.contains(NoticeOccasionEnum.UNSTABLE.name())) {
+        statusType = BuildStatusEnum.UNSTABLE;
+      }
+
+    } else if (Result.NOT_BUILT.equals(result)) {
+
+      if (noticeOccasions.contains(NoticeOccasionEnum.NOT_BUILT.name())) {
+        statusType = BuildStatusEnum.NOT_BUILT;
+      }
+
+    } else {
+      statusType = BuildStatusEnum.UNKNOWN;
+    }
+
+    return statusType;
   }
 
   @Symbol({"dingtalk", "dingTalk"})
