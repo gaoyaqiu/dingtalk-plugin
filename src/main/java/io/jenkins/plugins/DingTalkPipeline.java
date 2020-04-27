@@ -5,7 +5,10 @@ import hudson.EnvVars;
 import hudson.Extension;
 import hudson.FilePath;
 import hudson.Launcher;
+import hudson.model.AbstractBuild;
 import hudson.model.AbstractProject;
+import hudson.model.Build;
+import hudson.model.BuildListener;
 import hudson.model.Cause.UserIdCause;
 import hudson.model.Job;
 import hudson.model.Result;
@@ -180,6 +183,21 @@ public class DingTalkPipeline extends Builder implements SimpleBuildStep {
 
   public String isHideAvatar() {
     return hideAvatar ? "1" : "0";
+  }
+
+  @Override
+  public boolean prebuild(Build build, BuildListener listener) {
+    if (
+        globalConfig.getNoticeOccasions().contains(
+            NoticeOccasionEnum.START.name()
+        )
+    ) {
+      build.getp
+      build.get
+      this.perform(build, listener, BuildStatusEnum.START);
+    }
+
+//    return super.prebuild(build, listener);
   }
 
   @Override
